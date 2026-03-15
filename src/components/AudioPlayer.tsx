@@ -1,38 +1,49 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { Play, Pause, X, Gauge } from "lucide-react";
+import { Play, Pause, X, Gauge, Loader2 } from "lucide-react";
 import type { FileItem, Voice } from "@/pages/Index";
 
 interface AudioPlayerProps {
   file: FileItem;
   voice: Voice;
   isPlaying: boolean;
+  isLoading: boolean;
+  audioElement: HTMLAudioElement | null;
   onTogglePlay: () => void;
   onClose: () => void;
 }
 
 const WAVE_BARS = 40;
 
-const AudioPlayer = ({ file, voice, isPlaying, onTogglePlay, onClose }: AudioPlayerProps) => {
+const AudioPlayer = ({ file, voice, isPlaying, isLoading, audioElement, onTogglePlay, onClose }: AudioPlayerProps) => {
   const [progress, setProgress] = useState(0);
-  const [speed, setSpeed] = useState(1);
+  const [duration, setDuration] = useState(0);
+  const rafRef = useRef<number>();
 
   useEffect(() => {
-    if (!isPlaying) return;
-    const interval = setInterval(() => {
-      setProgress((p) => {
-        if (p >= 100) return 0;
-        return p + 0.2 * speed;
-      });
-    }, 50);
-    return () => clearInterval(interval);
-  }, [isPlaying, speed]);
+    if (!audioElement) return;
 
-  const speeds = [0.5, 0.75, 1, 1.25, 1.5, 2];
-  const nextSpeed = () => {
-    const idx = speeds.indexOf(speed);
-    setSpeed(speeds[(idx + 1) % speeds.length]);
+    const updateProgress = () => {
+      if (audioElement.duration && !isNaN(audioElement.duration)) {
+        setProgress((audioElement.currentTime / audioElement.duration) * 100);
+        setDuration(audioElement.duration);
+      }
+      rafRef.current = requestAnimationFrame(updateProgress);
+    };
+
+    rafRef.current = requestAnimationFrame(updateProgress);
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, [audioElement]);
+
+  const formatTime = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, "0")}`;
   };
+
+  const currentTime = audioElement ? audioElement.currentTime : 0;
 
   return (
     <motion.div
@@ -47,19 +58,31 @@ const AudioPlayer = ({ file, voice, isPlaying, onTogglePlay, onClose }: AudioPla
         whileHover={{ scale: 1.1 }}
         whileTap={{ scale: 0.95 }}
         onClick={onTogglePlay}
-        className="w-10 h-10 rounded-full bg-foreground text-background flex items-center justify-center flex-shrink-0"
+        disabled={isLoading}
+        className="w-10 h-10 rounded-full bg-foreground text-background flex items-center justify-center flex-shrink-0 disabled:opacity-50"
       >
-        {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
+        {isLoading ? (
+          <Loader2 className="w-4 h-4 animate-spin" />
+        ) : isPlaying ? (
+          <Pause className="w-4 h-4" />
+        ) : (
+          <Play className="w-4 h-4 ml-0.5" />
+        )}
       </motion.button>
 
       {/* Waveform + Info */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-2">
-          <span className="text-xs text-foreground font-medium truncate">{file.name}</span>
+          <span className="text-xs text-foreground font-medium truncate">{file?.name}</span>
           <span className="text-[10px] font-mono text-muted-foreground">· {voice.name}</span>
+          {duration > 0 && (
+            <span className="text-[10px] font-mono text-muted-foreground ml-auto">
+              {formatTime(currentTime)} / {formatTime(duration)}
+            </span>
+          )}
         </div>
 
-        {/* Waveform visualization */}
+        {/* Waveform */}
         <div className="flex items-end gap-[2px] h-5">
           {Array.from({ length: WAVE_BARS }).map((_, i) => {
             const barProgress = (i / WAVE_BARS) * 100;
@@ -73,6 +96,8 @@ const AudioPlayer = ({ file, voice, isPlaying, onTogglePlay, onClose }: AudioPla
                 animate={
                   isPlaying && isCurrent
                     ? { height: [randomHeight, randomHeight + 8, randomHeight], transition: { repeat: Infinity, duration: 0.4 } }
+                    : isLoading
+                    ? { height: [4, randomHeight, 4], transition: { repeat: Infinity, duration: 1, delay: i * 0.02 } }
                     : { height: randomHeight }
                 }
                 className={`w-[3px] rounded-full transition-colors duration-150 ${
@@ -85,22 +110,18 @@ const AudioPlayer = ({ file, voice, isPlaying, onTogglePlay, onClose }: AudioPla
         </div>
 
         {/* Progress bar */}
-        <div className="mt-1.5 h-[2px] bg-muted rounded-full overflow-hidden">
-          <motion.div
-            className="h-full bg-accent rounded-full"
-            style={{ width: `${progress}%` }}
-          />
+        <div
+          className="mt-1.5 h-[2px] bg-muted rounded-full overflow-hidden cursor-pointer"
+          onClick={(e) => {
+            if (!audioElement || !duration) return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            const pct = (e.clientX - rect.left) / rect.width;
+            audioElement.currentTime = pct * duration;
+          }}
+        >
+          <motion.div className="h-full bg-accent rounded-full" style={{ width: `${progress}%` }} />
         </div>
       </div>
-
-      {/* Speed */}
-      <button
-        onClick={nextSpeed}
-        className="flex items-center gap-1 px-2 py-1 rounded-md bg-secondary hover:bg-surface-hover transition-colors flex-shrink-0"
-      >
-        <Gauge className="w-3 h-3 text-muted-foreground" />
-        <span className="font-mono text-[11px] text-muted-foreground">{speed}x</span>
-      </button>
 
       {/* Close */}
       <button

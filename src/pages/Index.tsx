@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { FileText, Upload } from "lucide-react";
+import { toast } from "sonner";
 import FileCard from "@/components/FileCard";
 import VoiceSidebar from "@/components/VoiceSidebar";
 import AudioPlayer from "@/components/AudioPlayer";
@@ -18,15 +19,16 @@ export interface Voice {
   id: string;
   name: string;
   style: string;
-  preview?: string;
+  elevenLabsId: string;
 }
 
 const VOICES: Voice[] = [
-  { id: "v1", name: "Clara", style: "Narratrice" },
-  { id: "v2", name: "Thomas", style: "Sérieuse" },
-  { id: "v3", name: "Sophie", style: "Dynamique" },
-  { id: "v4", name: "Lucas", style: "Narrateur" },
-  { id: "v5", name: "Emma", style: "Calme" },
+  { id: "v1", name: "Sarah", style: "Narratrice", elevenLabsId: "EXAVITQu4vr4xnSDxMaL" },
+  { id: "v2", name: "Roger", style: "Sérieux", elevenLabsId: "CwhRBWXzGAHq8TQ4Fs17" },
+  { id: "v3", name: "Laura", style: "Dynamique", elevenLabsId: "FGY2WhTYpPnrIDTdsKH5" },
+  { id: "v4", name: "George", style: "Narrateur", elevenLabsId: "JBFqnCBsd6RMkjVDRZzb" },
+  { id: "v5", name: "Lily", style: "Calme", elevenLabsId: "pFZP5JQG7iQjIQuC4Bku" },
+  { id: "v6", name: "Daniel", style: "Professionnel", elevenLabsId: "onwK4e9ZLuTAKqWW03F9" },
 ];
 
 const Index = () => {
@@ -37,31 +39,45 @@ const Index = () => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [playingFile, setPlayingFile] = useState<FileItem | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const readFileContent = async (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target?.result as string);
+      reader.onerror = reject;
+      reader.readAsText(file);
+    });
+  };
+
+  const processFiles = async (rawFiles: File[]) => {
+    const newFiles: FileItem[] = [];
+    for (const f of rawFiles) {
+      const content = await readFileContent(f).catch(() => "");
+      newFiles.push({
+        id: crypto.randomUUID(),
+        name: f.name,
+        size: formatSize(f.size),
+        type: f.name.split(".").pop()?.toUpperCase() || "FILE",
+        status: "ready",
+        content: content || `Contenu du fichier ${f.name}`,
+      });
+    }
+    setFiles((prev) => [...prev, ...newFiles]);
+    if (newFiles.length > 0) {
+      toast.success(`${newFiles.length} fichier${newFiles.length > 1 ? "s" : ""} importé${newFiles.length > 1 ? "s" : ""}`);
+    }
+  };
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(false);
-    const droppedFiles = Array.from(e.dataTransfer.files);
-    const newFiles: FileItem[] = droppedFiles.map((f) => ({
-      id: crypto.randomUUID(),
-      name: f.name,
-      size: formatSize(f.size),
-      type: f.name.split(".").pop()?.toUpperCase() || "FILE",
-      status: "ready" as const,
-    }));
-    setFiles((prev) => [...prev, ...newFiles]);
+    processFiles(Array.from(e.dataTransfer.files));
   }, []);
 
   const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const inputFiles = Array.from(e.target.files || []);
-    const newFiles: FileItem[] = inputFiles.map((f) => ({
-      id: crypto.randomUUID(),
-      name: f.name,
-      size: formatSize(f.size),
-      type: f.name.split(".").pop()?.toUpperCase() || "FILE",
-      status: "ready" as const,
-    }));
-    setFiles((prev) => [...prev, ...newFiles]);
+    processFiles(Array.from(e.target.files || []));
   }, []);
 
   const handleFileClick = (file: FileItem) => {
@@ -69,15 +85,100 @@ const Index = () => {
     setSidebarOpen(true);
   };
 
-  const handlePlay = (file: FileItem) => {
+  const handlePlay = async (file: FileItem) => {
+    if (!file.content) {
+      toast.error("Impossible de lire le contenu du fichier");
+      return;
+    }
+
+    // Stop current audio
+    if (audioElement) {
+      audioElement.pause();
+      audioElement.src = "";
+    }
+
+    setIsLoading(true);
     setPlayingFile(file);
-    setIsPlaying(true);
     setFiles((prev) =>
       prev.map((f) => ({
         ...f,
-        status: f.id === file.id ? "playing" : f.status === "playing" ? "ready" : f.status,
+        status: f.id === file.id ? "processing" : f.status === "playing" ? "ready" : f.status,
       }))
     );
+    setSidebarOpen(false);
+
+    try {
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/text-to-speech`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          },
+          body: JSON.stringify({
+            text: file.content.substring(0, 5000),
+            voiceId: selectedVoice.elevenLabsId,
+            speed: 1,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: "Unknown error" }));
+        throw new Error(err.error || `Erreur ${response.status}`);
+      }
+
+      const audioBlob = await response.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const audio = new Audio(audioUrl);
+
+      audio.onended = () => {
+        setIsPlaying(false);
+        setFiles((prev) => prev.map((f) => ({ ...f, status: f.status === "playing" ? "ready" : f.status })));
+      };
+
+      setAudioElement(audio);
+      await audio.play();
+      setIsPlaying(true);
+      setIsLoading(false);
+      setFiles((prev) =>
+        prev.map((f) => ({
+          ...f,
+          status: f.id === file.id ? "playing" : f.status,
+        }))
+      );
+      toast.success("Lecture lancée avec la voix de " + selectedVoice.name);
+    } catch (error) {
+      console.error("TTS error:", error);
+      setIsLoading(false);
+      setPlayingFile(null);
+      setFiles((prev) => prev.map((f) => ({ ...f, status: "ready" })));
+      toast.error(error instanceof Error ? error.message : "Erreur lors de la génération audio");
+    }
+  };
+
+  const handleTogglePlay = () => {
+    if (!audioElement) return;
+    if (isPlaying) {
+      audioElement.pause();
+      setIsPlaying(false);
+    } else {
+      audioElement.play();
+      setIsPlaying(true);
+    }
+  };
+
+  const handleClosePlayer = () => {
+    if (audioElement) {
+      audioElement.pause();
+      audioElement.src = "";
+    }
+    setAudioElement(null);
+    setPlayingFile(null);
+    setIsPlaying(false);
+    setFiles((prev) => prev.map((f) => ({ ...f, status: f.status === "playing" ? "ready" : f.status })));
   };
 
   const handleRemoveFile = (id: string) => {
@@ -86,10 +187,7 @@ const Index = () => {
       setSidebarOpen(false);
       setSelectedFile(null);
     }
-    if (playingFile?.id === id) {
-      setPlayingFile(null);
-      setIsPlaying(false);
-    }
+    if (playingFile?.id === id) handleClosePlayer();
   };
 
   return (
@@ -144,12 +242,15 @@ const Index = () => {
                   Écoutez vos documents.
                 </h1>
                 <p className="text-sm text-muted-foreground mb-8 text-center max-w-xs">
-                  Glissez-déposez vos fichiers ici ou cliquez pour importer. L'IA les lira avec une voix naturelle.
+                  Glissez-déposez vos fichiers texte ici. L'IA les lira avec une voix naturelle ElevenLabs.
                 </p>
                 <label className="cursor-pointer px-6 py-2.5 rounded-lg bg-foreground text-background text-sm font-medium hover:opacity-90 transition-opacity">
                   Importer un fichier
-                  <input type="file" className="hidden" multiple accept=".pdf,.txt,.doc,.docx,.md" onChange={handleFileInput} />
+                  <input type="file" className="hidden" multiple accept=".txt,.md,.csv,.json,.html" onChange={handleFileInput} />
                 </label>
+                <p className="text-[10px] font-mono text-muted-foreground/50 mt-4">
+                  Formats supportés : TXT, MD, CSV, JSON, HTML
+                </p>
               </motion.div>
             </motion.div>
           )}
@@ -171,8 +272,6 @@ const Index = () => {
                   onRemove={() => handleRemoveFile(file.id)}
                 />
               ))}
-
-              {/* Add more button */}
               <motion.label
                 layout
                 key="add-more"
@@ -182,7 +281,7 @@ const Index = () => {
               >
                 <Upload className="w-5 h-5 text-muted-foreground mb-2" />
                 <span className="text-xs text-muted-foreground">Ajouter</span>
-                <input type="file" className="hidden" multiple accept=".pdf,.txt,.doc,.docx,.md" onChange={handleFileInput} />
+                <input type="file" className="hidden" multiple accept=".txt,.md,.csv,.json,.html" onChange={handleFileInput} />
               </motion.label>
             </AnimatePresence>
           </motion.div>
@@ -198,21 +297,20 @@ const Index = () => {
         onSelectVoice={setSelectedVoice}
         selectedFile={selectedFile}
         onPlay={handlePlay}
+        isLoading={isLoading}
       />
 
       {/* Audio Player */}
       <AnimatePresence>
-        {playingFile && (
+        {(playingFile || isLoading) && (
           <AudioPlayer
-            file={playingFile}
+            file={playingFile!}
             voice={selectedVoice}
             isPlaying={isPlaying}
-            onTogglePlay={() => setIsPlaying(!isPlaying)}
-            onClose={() => {
-              setPlayingFile(null);
-              setIsPlaying(false);
-              setFiles((prev) => prev.map((f) => ({ ...f, status: f.status === "playing" ? "ready" : f.status })));
-            }}
+            isLoading={isLoading}
+            audioElement={audioElement}
+            onTogglePlay={handleTogglePlay}
+            onClose={handleClosePlayer}
           />
         )}
       </AnimatePresence>
